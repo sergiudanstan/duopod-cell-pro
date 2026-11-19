@@ -10,7 +10,7 @@ import { fileURLToPath } from "node:url";
 const { chromium } = await import("/opt/homebrew/lib/node_modules/playwright/index.mjs");
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
-const outDir = join(homedir(), "Downloads/duopod_cell_pro/shots");
+const outDir = process.env.OUT_DIR ? join(process.env.OUT_DIR, "shots") : join(homedir(), "Downloads/duopod_cell_pro/shots");
 const cad0 = process.argv.includes("--cad=0");
 const quick = process.argv.includes("--quick");
 const views = ["iso", "front", "side", "top", "robot", "pick"];
@@ -72,6 +72,7 @@ try {
   await page.goto("http://127.0.0.1:8777/index.html" + (cad0 ? "?cad=0" : ""), { waitUntil: "domcontentloaded", timeout: 60000 });
   await page.waitForFunction(() => window.pcReady === true, { timeout: 45000 });
   if (!cad0) await page.waitForFunction(() => window.pc.cad === true, { timeout: 30000 });
+  await page.waitForFunction(() => document.querySelector('.sim-switch [data-src="physics"]').getAttribute("aria-pressed") === "true", { timeout: 30000 });
   // The HQ watchdog closes after the first 3 s. Wait it out, then lock HQ so the stills show AO.
   await page.waitForTimeout(3200);
   await page.evaluate(() => window.setQuality(true));

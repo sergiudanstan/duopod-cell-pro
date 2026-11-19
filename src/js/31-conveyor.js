@@ -105,20 +105,25 @@ const bladeRoot = aOut(BELTS.A.w / 2 + 0.10);
   escBlade.position.set(bladeRoot, BLADE_Y - 0.004, 0.035);
 }
 const escClamp = new THREE.Group(); world.add(escClamp);
-const clampY = BLADE_Y - CARTON.y / 2, clampRoot = aOut(BELTS.A.w / 2 + 0.006);
+// top clamp: a vertical compact cylinder on a bracket over belt A presses the queued carton from above (no sideways push;
+// the MuJoCo run showed a side clamp shoves the carton against the opposite guide and it rubs the guide when lifted)
+const clampY = BLADE_Y - 1.5 * CARTON.y, CLAMP_Z0 = CARTON.h + 0.028;
 {
-  const cg = new THREE.Group(); cg.position.set(aOut(BELTS.A.w / 2 + 0.07), clampY, 0.035); cg.rotation.z = so > 0 ? 0 : Math.PI; world.add(cg);
-  compactCylinder(cg);
-  rbox(0.008, 0.12, 0.035, 0.002, M.blackRubber, 0, 0, 0, escClamp);
-  rbox(0.05, 0.010, 0.010, 0.002, M.steel, so * 0.028, 0, 0, escClamp);
-  escClamp.position.set(clampRoot, clampY, 0.035);
+  const A = BELTS.A, xo = aOut(A.w / 2 + 0.05);
+  rbox(0.03, 0.04, CLAMP_Z0 + 0.16, 0.003, M.galv, xo, clampY, (CLAMP_Z0 + 0.16) / 2 - 0.02, world);             // upright on the frame
+  rbox(Math.abs(xo - A.x) + 0.04, 0.04, 0.02, 0.003, M.galv, (xo + A.x) / 2, clampY, CLAMP_Z0 + 0.15, world);       // arm over the belt
+  const cg = new THREE.Group(); cg.position.set(A.x, clampY, CLAMP_Z0 + 0.13); cg.rotation.y = Math.PI / 2; world.add(cg);
+  compactCylinder(cg); cg.children[0].position.x = -0.0;
+  rbox(0.12, 0.10, 0.012, 0.003, M.blackRubber, 0, 0, 0, escClamp);                                                 // pad
+  const pr = rod(0.005, M.chrome, 12); escClamp.add(pr); placeRod(pr, V(0, 0, 0.006), V(0, 0, 0.05));
+  escClamp.position.set(A.x, clampY, CLAMP_Z0);
 }
 // PU tubes from the valve terminal to both cylinders
 {
   const vt = valveTerminal.position, A = BELTS.A;
   for (const [k, yT] of [[0, BLADE_Y - 0.004], [1, clampY]]) {
-    const xT = aOut(A.w / 2 + 0.14 + (k ? -0.07 + 0.05 : 0) + 0.03), y0 = vt.y - 0.05 + k * 0.05;
-    tubeAlong([V(vt.x, y0, vt.z + 0.09), V(vt.x, y0 + 0.02, 0.10), V(xT, (y0 + yT) / 2, 0.11), V(xT, yT - 0.0, 0.065)], 0.003, M.puBlueTube, world, 32, 8);
+    const xT = k ? A.x : aOut(A.w / 2 + 0.17), zT = k ? CLAMP_Z0 + 0.22 : 0.065, y0 = vt.y - 0.05 + k * 0.05;
+    tubeAlong([V(vt.x, y0, vt.z + 0.09), V(vt.x, y0 + 0.02, 0.10), V((vt.x + xT) / 2, (y0 + yT) / 2, k ? 0.32 : 0.11), V(xT, yT - 0.0, zT)], 0.003, M.puBlueTube, world, 32, 8);
   }
   tubeAlong([V(vt.x, vt.y + 0.08, vt.z), V(vt.x + Math.sign(A.x) * 0.1, vt.y - 0.2, -0.3), V(PX + 0.0, -PY + 0.05, -0.35)], 0.004, M.puBlueTube, world, 32, 8);
 }
@@ -136,7 +141,13 @@ function setConveyors(t) {
     const m = beltMats[name]; m.map.offset.y = -(t * B.v) / 0.16;
   }
   const st = escapeState(t);
-  escBlade.position.x = bladeRoot + (st.open ? so * 0.12 : 0);
-  escClamp.position.x = clampRoot - (st.clampOn ? so * 0.060 : 0);
+  if (PHYS) {          // physics replay: actual slide travel of the blade and the clamp
+    const i = physIndex(t)[0];
+    escBlade.position.x = bladeRoot + so * PHYS.blade[i];
+    escClamp.position.z = CLAMP_Z0 - PHYS.clamp[i];
+  } else {
+    escBlade.position.x = bladeRoot + (st.open ? so * 0.12 : 0);
+    escClamp.position.z = CLAMP_Z0 - (st.clampOn ? 0.022 : 0);
+  }
   return st;
 }

@@ -43,6 +43,7 @@ function placeCartons(t) {
     const p = cartonAt(c, t), o = cartonMeshes[i];
     o.visible = !!p;
     if (p) o.position.set(p[0], p[1], p[2]);
+    if (p && PHYS) { const q = physCarton(c.k, t); o.quaternion.set(q[4], q[5], q[6], q[3]); } else o.quaternion.identity();
     if (c.place != null && t >= c.place) done++;
     else if (p && (c.pick == null || t < c.pick)) queue++;
   });

@@ -87,6 +87,8 @@
   .mode-switch { margin-left: auto; display: flex; gap: 2px; padding: 3px; border: 1px solid var(--line); border-radius: 10px; background: var(--panel-2); }
   .mode-switch button { border: 0; background: none; cursor: pointer; padding: 6px 16px; border-radius: 7px; font-size: 13px; font-weight: 600; color: var(--muted); }
   .mode-switch button[aria-pressed="true"] { background: var(--ink); color: var(--bg); }
+  .mode-switch button:disabled { opacity: 0.45; cursor: default; }
+  .sim-switch button[data-src="physics"][aria-pressed="true"] { background: var(--delta); color: #fff; }
   .icon-btn { flex: none; width: 36px; height: 36px; display: grid; place-items: center; border: 1px solid var(--line); border-radius: 9px; background: var(--panel); cursor: pointer; }
   .icon-btn:hover { border-color: var(--faint); }
   .icon-btn svg { width: 18px; height: 18px; }
@@ -293,7 +295,11 @@
     <small>2-axis parallel robot · 3 kg · conveyor to conveyor · PRO</small>
     <h1>DuoPod transfer cell <span class="d">Pro</span>: <span class="a">belt A</span> → <span class="b">belt B</span></h1>
   </div>
-  <div class="mode-switch" role="group" aria-label="Mode">
+  <div class="mode-switch sim-switch" role="group" aria-label="Simulation source">
+    <button type="button" data-src="kinematic" aria-pressed="false">Kinematic</button>
+    <button type="button" data-src="physics" aria-pressed="false" disabled>MuJoCo physics</button>
+  </div>
+  <div class="mode-switch" role="group" aria-label="Mode" style="margin-left:0">
     <button type="button" data-mode="program" aria-pressed="true">Program</button>
     <button type="button" data-mode="manual" aria-pressed="false">Manual</button>
   </div>
@@ -340,6 +346,7 @@
 
     <div class="card" id="whatif-card">
       <h2>What-if <span>live rebuild of the cycle</span><button class="close" type="button" aria-label="Close panel">×</button></h2>
+      <p class="small-note" id="sim-note" style="margin:0 0 10px"></p>
       <div id="whatif"></div>
       <div class="jog-check"><label><input type="checkbox" id="wi-smart"> Smart cycle (straight back to the next carton)</label></div>
       <div class="btn-row"><button class="btn" id="wi-opt" type="button">Optimize time</button><button class="btn" id="wi-reset" type="button">Reset</button></div>
@@ -499,7 +506,8 @@ const PARAMS0 = { ...PARAMS };
 // ---------------------------------------------------------------- cell
 const CARTON = { x: 0.180, y: 0.250, h: 0.120 };          // across the belt, along the belt, height
 const BELTS = {
-  A: { x: 0.20, w: 0.30, v: PARAMS.vA, y0: -1.75, y1: 0.40 },    // infeed (operator's left, seen from +y), flows +y, stops the carton in the robot plane
+  A: { x: 0.20, w: 0.22, v: PARAMS.vA, y0: -1.75, y1: 0.40 },    // infeed (operator's left, seen from +y); guides 220 mm apart keep the carton
+  //   centred under the gripper (the MuJoCo physics run showed a 300 mm gap lets real cartons drift sideways)
   B: { x: -0.20, w: 0.30, v: PARAMS.vB, y0: -0.55, y1: 1.75 },   // outfeed, runs continuously
 };
 const GUIDE = { t: 0.010, top: 0.060 };
@@ -634,6 +642,50 @@ function applyParams() {
 // ---------------------------------------------------------------- event simulation: infeed queue, escapement, stopper, robot, outfeed
 const SIM_DT = 1 / 600;
 let segs = [], cartons = [], escape = [], DURATION = 0;
+// MuJoCo physics replay (duopod-cell-mujoco/tools/export_trajectory.py): when set, the cycle, the TCP, the cartons and the vacuum
+// come from the recorded physics run instead of the kinematic event simulation; every check below runs on that data.
+let PHYS = null;
+const physIndex = (t) => { const f = clamp(t * PHYS.fps, 0, PHYS.n - 1), i = Math.floor(f); return [i, Math.min(PHYS.n - 1, i + 1), f - i]; };
+function scheduleFromPhysics() {
+  segs = []; escape = [];
+  const st = PHYS.state, k = PHYS.k, tt = PHYS.t;
+  for (let i = 0; i < PHYS.n; i++) {
+    if (i === 0 || st[i] !== st[i - 1]) {
+      if (segs.length) segs[segs.length - 1].t1 = tt[i];
+      segs.push({ kind: st[i], t0: tt[i], t1: tt[i], k: k[i] >= 0 && st[i] !== "wait" && st[i] !== "back" ? k[i] : undefined });
+    }
+  }
+  segs[segs.length - 1].t1 = PHYS.duration;
+  let open = false;
+  for (let i = 0; i < PHYS.n; i++) {
+    const o = PHYS.blade[i] > 0.02;
+    if (o !== open) { escape.push(o ? { t: tt[i], ev: "release", clamp: PHYS.clamp[i] > 0.005 ? 1 : -1 } : { t: tt[i], ev: "blade up" }); open = o; }
+  }
+  cartons = PHYS.cartons.map((fr, kk) => {
+    const first = fr.findIndex((f) => f !== 0), placed = PHYS.placed.find((p) => p[1] === kk);
+    let last = -1; for (let i = fr.length - 1; i >= 0; i--) if (fr[i] !== 0) { last = i; break; }
+    return { k: kk, knots: [], spawn: first >= 0 ? tt[first] : null, pick: PHYS.picks[kk] ?? null, place: placed ? placed[0] : null,
+      bAt: placed ? placed[0] : null, gone: last >= 0 && last < PHYS.n - 1 ? tt[last + 1] : Infinity };
+  });
+  DURATION = PHYS.duration;
+  segs.push({ kind: "end", t0: DURATION, t1: DURATION + 1e-6 });
+}
+// physics replay: arm-side torque measured in MuJoCo (actuator force), joint speed / acceleration from the recorded TCP
+// at the recording rate (finer differences of the interpolated path would only measure the interpolation)
+function physDynamics(t) {
+  const [i] = physIndex(t), h = 1 / PHYS.fps, a = Math.max(0, i - 1), b = Math.min(PHYS.n - 1, i + 1);
+  const th = [a, i, b].map((k) => ik2(PHYS.tcp[k]));
+  if (th.some((v) => !v)) return { tau: [NaN, NaN], thd: [0, 0], thdd: [0, 0] };
+  const thd = [0, 1].map((j) => (th[2][j] - th[0][j]) / ((b - a) * h || h));
+  const thdd = [0, 1].map((j) => (th[2][j] - 2 * th[1][j] + th[0][j]) / (h * h));
+  return { tau: PHYS.tau[i].slice(), thd, thdd, measured: true };
+}
+function physCarton(kk, t) {        // [x, y, z, qw, qx, qy, qz] of the carton centre, or null
+  const [i, j, a] = physIndex(t), fr = PHYS.cartons[kk], A = fr[i], B = fr[j];
+  if (!A) return null;
+  if (!B) return A.slice();
+  return A.map((v, n) => (n < 3 ? lerp(v, B[n], a) : (a < 0.5 ? v : B[n])));
+}
 const LABEL = {
   wait: "Wait for carton", down: "Descend to carton", grip: "Vacuum on", transfer: "Transfer A → B",
   release: "Vacuum off, blow-off", holdB: "Hold: belt B drop zone busy", back: "Return above infeed", backPick: "Return straight to next carton", end: "Home",
@@ -655,6 +707,7 @@ const ESC_ON_GRIP = false;
 
 let violations = [];
 function schedule() {
+  if (PHYS) return scheduleFromPhysics();
   segs = []; escape = []; violations = [];
   // carton k: front edge on belt A as knots [t, yFront]; then held by the robot; then on belt B.
   cartons = Array.from({ length: N_CARTONS }, (_, k) => ({ k, knots: [], spawn: null, pick: null, place: null, bAt: null, gone: Infinity }));
@@ -764,13 +817,14 @@ function segAt(t) {
   return segs[lo];
 }
 function robotTcp(t) {
+  if (PHYS) { const [i, j, a] = physIndex(t); return [lerp(PHYS.tcp[i][0], PHYS.tcp[j][0], a), lerp(PHYS.tcp[i][1], PHYS.tcp[j][1], a)]; }
   const s = segAt(t);
   if (s.move) return MOVES[s.move].at(t - s.t0);
   if (s.kind === "grip" || s.kind === "holdB") return P.pick.slice();
   if (s.kind === "release") return P.place.slice();
   return P.ready.slice();
 }
-function vacuumOn(t) { const s = segAt(t); return s.kind === "grip" ? (t - s.t0) / (s.t1 - s.t0) > 0.3 : s.kind === "transfer" || s.kind === "holdB" || s.kind === "release" && (t - s.t0) / (s.t1 - s.t0) < 0.4; }
+function vacuumOn(t) { if (PHYS) return PHYS.vac[physIndex(t)[0]] === 1; const s = segAt(t); return s.kind === "grip" ? (t - s.t0) / (s.t1 - s.t0) > 0.3 : s.kind === "transfer" || s.kind === "holdB" || s.kind === "release" && (t - s.t0) / (s.t1 - s.t0) < 0.4; }
 // knot interpolation: between knots the carton either moves at belt speed or stands still, so linear interpolation is exact
 function frontAt(c, t) {
   const K = c.knots;
@@ -786,6 +840,7 @@ function frontAt(c, t) {
 }
 // carton bottom-face centre [x, y, z] or null when not in the cell
 function cartonAt(c, t) {
+  if (PHYS) { const q = physCarton(c.k, t); return q ? [q[0], q[1], q[2] - CARTON.h / 2] : null; }
   if (c.spawn == null || t < c.spawn) return null;
   if (c.bAt != null && t >= c.bAt) {
     if (t >= c.gone) return null;
@@ -866,7 +921,7 @@ function sampleCycle() {
     mu.push(transmission(pose));
     const J = jacobian(pose.th); cond.push(cond2(J));
     const holding = cartons.some((c) => c.pick != null && t >= c.pick && t < c.bAt);
-    const d = jointDynamics(t, holding);                 // arm-side torque, speed, accel (11-dynamics)
+    const d = PHYS ? physDynamics(t) : jointDynamics(t, holding);   // arm-side torque, speed, accel (11-dynamics / measured)
     dyn.push(d); torque.push(d.tau);
     // clearances
     let best = { m: Infinity, what: "" }, pen = 0;
@@ -877,7 +932,7 @@ function sampleCycle() {
     for (const o of STATIC) {
       for (const cp of env.caps) note(capsuleBoxDist(cp, o), `${cp.name} ↔ ${o.name}`);
       for (const bx of env.boxes) note(boxGap(bx, o), `${bx.name} ↔ ${o.name}`);
-      if (heldBox && !(o.name === "stopper" && Math.abs(heldBox.q[0] - BELTS.A.x) < 1e-6)) note(boxGap(heldBox.box, o), `held carton ↔ ${o.name}`);
+      if (heldBox && !(o.name === "stopper" && Math.abs(heldBox.q[0] - BELTS.A.x) < (BELTS.A.w - CARTON.x) / 2 + 1e-6)) note(boxGap(heldBox.box, o), `held carton ↔ ${o.name}`);
     }
     for (const lb of loose) {
       for (const cp of env.caps) note(capsuleBoxDist(cp, lb.box), `${cp.name} ↔ carton ${lb.c.k + 1}`);
@@ -1009,7 +1064,8 @@ function motorStats() {
     const d = S.dyn[k]; if (!d) { tm.push([NaN, NaN]); nm.push([NaN, NaN]); continue; }
     const tq = [0, 1].map((j) => {
       const load = d.tau[j] / i, motoring = d.tau[j] * d.thd[j] >= 0;
-      return (motoring ? load / eta : load * eta) + MOTOR.J * i * d.thdd[j];
+      // measured physics torque already contains the reflected rotor inertia (MuJoCo armature)
+      return (motoring ? load / eta : load * eta) + (d.measured ? 0 : MOTOR.J * i * d.thdd[j]);
     });
     const n = [0, 1].map((j) => d.thd[j] * i * 60 / (2 * Math.PI));
     tm.push(tq); nm.push(n);
@@ -1041,7 +1097,8 @@ function minClearance() { return S.clear.reduce((b, c, k) => (c.m < b.m ? { ...c
 function checkLimits() {
   const fails = [];
   if (!S.th.every(Boolean)) fails.push("reach");
-  if (Math.max(...S.overlap) > 1e-6) fails.push("carton overlap");
+  // queued cartons touch; MuJoCo soft contacts compress up to a few tenths of a millimetre, so physics data gets 1 mm
+  if (Math.max(...S.overlap) > (PHYS ? 1e-3 : 1e-6)) fails.push("carton overlap");
   if (minClearance().m < 0.010) fails.push("clearance < 10 mm");
   if (Math.max(...S.gripPen) > 1e-6) fails.push("gripper hits a carton");
   if (violations.length) fails.push("descent without carton");
@@ -1945,20 +2002,25 @@ const bladeRoot = aOut(BELTS.A.w / 2 + 0.10);
   escBlade.position.set(bladeRoot, BLADE_Y - 0.004, 0.035);
 }
 const escClamp = new THREE.Group(); world.add(escClamp);
-const clampY = BLADE_Y - CARTON.y / 2, clampRoot = aOut(BELTS.A.w / 2 + 0.006);
+// top clamp: a vertical compact cylinder on a bracket over belt A presses the queued carton from above (no sideways push;
+// the MuJoCo run showed a side clamp shoves the carton against the opposite guide and it rubs the guide when lifted)
+const clampY = BLADE_Y - 1.5 * CARTON.y, CLAMP_Z0 = CARTON.h + 0.028;
 {
-  const cg = new THREE.Group(); cg.position.set(aOut(BELTS.A.w / 2 + 0.07), clampY, 0.035); cg.rotation.z = so > 0 ? 0 : Math.PI; world.add(cg);
-  compactCylinder(cg);
-  rbox(0.008, 0.12, 0.035, 0.002, M.blackRubber, 0, 0, 0, escClamp);
-  rbox(0.05, 0.010, 0.010, 0.002, M.steel, so * 0.028, 0, 0, escClamp);
-  escClamp.position.set(clampRoot, clampY, 0.035);
+  const A = BELTS.A, xo = aOut(A.w / 2 + 0.05);
+  rbox(0.03, 0.04, CLAMP_Z0 + 0.16, 0.003, M.galv, xo, clampY, (CLAMP_Z0 + 0.16) / 2 - 0.02, world);             // upright on the frame
+  rbox(Math.abs(xo - A.x) + 0.04, 0.04, 0.02, 0.003, M.galv, (xo + A.x) / 2, clampY, CLAMP_Z0 + 0.15, world);       // arm over the belt
+  const cg = new THREE.Group(); cg.position.set(A.x, clampY, CLAMP_Z0 + 0.13); cg.rotation.y = Math.PI / 2; world.add(cg);
+  compactCylinder(cg); cg.children[0].position.x = -0.0;
+  rbox(0.12, 0.10, 0.012, 0.003, M.blackRubber, 0, 0, 0, escClamp);                                                 // pad
+  const pr = rod(0.005, M.chrome, 12); escClamp.add(pr); placeRod(pr, V(0, 0, 0.006), V(0, 0, 0.05));
+  escClamp.position.set(A.x, clampY, CLAMP_Z0);
 }
 // PU tubes from the valve terminal to both cylinders
 {
   const vt = valveTerminal.position, A = BELTS.A;
   for (const [k, yT] of [[0, BLADE_Y - 0.004], [1, clampY]]) {
-    const xT = aOut(A.w / 2 + 0.14 + (k ? -0.07 + 0.05 : 0) + 0.03), y0 = vt.y - 0.05 + k * 0.05;
-    tubeAlong([V(vt.x, y0, vt.z + 0.09), V(vt.x, y0 + 0.02, 0.10), V(xT, (y0 + yT) / 2, 0.11), V(xT, yT - 0.0, 0.065)], 0.003, M.puBlueTube, world, 32, 8);
+    const xT = k ? A.x : aOut(A.w / 2 + 0.17), zT = k ? CLAMP_Z0 + 0.22 : 0.065, y0 = vt.y - 0.05 + k * 0.05;
+    tubeAlong([V(vt.x, y0, vt.z + 0.09), V(vt.x, y0 + 0.02, 0.10), V((vt.x + xT) / 2, (y0 + yT) / 2, k ? 0.32 : 0.11), V(xT, yT - 0.0, zT)], 0.003, M.puBlueTube, world, 32, 8);
   }
   tubeAlong([V(vt.x, vt.y + 0.08, vt.z), V(vt.x + Math.sign(A.x) * 0.1, vt.y - 0.2, -0.3), V(PX + 0.0, -PY + 0.05, -0.35)], 0.004, M.puBlueTube, world, 32, 8);
 }
@@ -1976,8 +2038,14 @@ function setConveyors(t) {
     const m = beltMats[name]; m.map.offset.y = -(t * B.v) / 0.16;
   }
   const st = escapeState(t);
-  escBlade.position.x = bladeRoot + (st.open ? so * 0.12 : 0);
-  escClamp.position.x = clampRoot - (st.clampOn ? so * 0.060 : 0);
+  if (PHYS) {          // physics replay: actual slide travel of the blade and the clamp
+    const i = physIndex(t)[0];
+    escBlade.position.x = bladeRoot + so * PHYS.blade[i];
+    escClamp.position.z = CLAMP_Z0 - PHYS.clamp[i];
+  } else {
+    escBlade.position.x = bladeRoot + (st.open ? so * 0.12 : 0);
+    escClamp.position.z = CLAMP_Z0 - (st.clampOn ? 0.022 : 0);
+  }
   return st;
 }
 // Corrugated cartons 180 x 250 x 120 mm, 3 kg: top flaps closed with tape, shipping label with a barcode, handling marks.
@@ -2025,6 +2093,7 @@ function placeCartons(t) {
     const p = cartonAt(c, t), o = cartonMeshes[i];
     o.visible = !!p;
     if (p) o.position.set(p[0], p[1], p[2]);
+    if (p && PHYS) { const q = physCarton(c.k, t); o.quaternion.set(q[4], q[5], q[6], q[3]); } else o.quaternion.identity();
     if (c.place != null && t >= c.place) done++;
     else if (p && (c.pick == null || t < c.pick)) queue++;
   });
@@ -2497,6 +2566,7 @@ function drawDriveCharts() {
     <line x1="${L}" x2="${W - R}" y1="${Y(0)}" y2="${Y(0)}" class="axis"/>
     ${hline(MOTOR.M0, "lim0", "S1 M0")}${hline(-MOTOR.M0, "lim0", "")}${hline(lim, "lim1", `${(PARAMS.torqueLimit * 100).toFixed(0)} % Mmax`)}${hline(-lim, "lim1", "")}
     ${MOTOR_ROWS.map(([, j, col]) => `<polyline points="${line(j)}" fill="none" stroke="var(${col})" stroke-width="1.3"/>`).join("")}
+    ${PHYS ? MOTOR_ROWS.map(([, j, col]) => `<polyline points="${PHYS.tau.map((q, k) => (k % 2 ? null : `${X(PHYS.t[k]).toFixed(1)},${Y(q[j] / (PARAMS.ratio * PARAMS.eta)).toFixed(1)}`)).filter(Boolean).join(" ")}" fill="none" stroke="var(${col})" stroke-width="1" stroke-dasharray="3 2" opacity="0.9"/>`).join("") : ""}
     <line id="tq-head" x1="${L}" x2="${L}" y1="${T}" y2="${H - B}" stroke="var(--accent)"/>
     <text x="${L - 4}" y="${Y(ymax * 0.85) + 3}" text-anchor="end">${fmt(ymax * 0.85, 0)}</text><text x="${L - 4}" y="${Y(-ymax * 0.85) + 3}" text-anchor="end">${fmt(-ymax * 0.85, 0)}</text>
     <text x="${L}" y="${H - 6}">0 s</text><text x="${W - R}" y="${H - 6}" text-anchor="end">${DURATION.toFixed(1)} s · motor torque, Nm</text>
@@ -2641,6 +2711,7 @@ function syncWhatIfInputs() {
 }
 let rebuildTimer = 0;
 function queueRebuild() {
+  if (PHYS) { setSimSource("kinematic"); return; }
   clearTimeout(rebuildTimer);
   rebuildTimer = setTimeout(() => { rebuild(); refreshModel(); }, 90);
 }
@@ -2823,6 +2894,39 @@ function buildPrintReport() {
       <li>Not modelled: joint friction, gearbox backlash and stiffness, cable forces, controller dynamics. Results are a sizing estimate, not a validated machine.</li></ul>`;
 }
 $("print-btn").addEventListener("click", () => { buildPrintReport(); window.print(); });
+// ---------------------------------------------------------------- MuJoCo physics replay: load the recorded run, switch the source of the cycle
+// Data: physics/duopod_physics.json, written by duopod-cell-mujoco/tools/export_trajectory.py (real contacts, friction,
+// adhesion gripper, closed-chain dynamics). ?physics=0 starts in the kinematic model.
+let physData = null;
+const simButtons = document.querySelectorAll(".sim-switch button");
+function setSimSource(src) {
+  const phys = src === "physics" && physData;
+  PHYS = phys ? physData : null;
+  simButtons.forEach((b) => b.setAttribute("aria-pressed", String(b.dataset.src === (phys ? "physics" : "kinematic"))));
+  document.querySelectorAll("#whatif input").forEach((i) => { i.disabled = false; });
+  $("wi-opt").disabled = !!phys;
+  $("sim-note").textContent = phys
+    ? `Showing the recorded ${physData.meta.engine} run: contacts, friction, vacuum adhesion, closed-chain dynamics (1 kHz control). Dashed lines: torque measured in the physics. Moving a slider switches back to the kinematic model.`
+    : "Kinematic model: event simulation with analytic dynamics. What-if sliders rebuild it live.";
+  rebuild(); refreshModel();
+  time = 0;
+}
+simButtons.forEach((b) => b.addEventListener("click", () => setSimSource(b.dataset.src)));
+(async () => {
+  try {
+    const r = await fetch("physics/duopod_physics.json");
+    if (!r.ok) throw new Error(r.status);
+    const d = await r.json();
+    d.n = d.t.length; d.fps = d.meta.fps;
+    physData = d;
+    simButtons.forEach((b) => { b.disabled = false; });
+    if (new URLSearchParams(location.search).get("physics") !== "0") setSimSource("physics");
+    window.dispatchEvent(new Event("physicsloaded"));
+  } catch (err) {
+    $("sim-note").textContent = "Physics replay not available (physics/duopod_physics.json missing): kinematic model only.";
+    simButtons.forEach((b) => { if (b.dataset.src === "physics") b.disabled = true; });
+  }
+})();
 // ---------------------------------------------------------------- playback
 let time = 0, playing = true, speed = 1;
 const playIcon = $("play-icon");

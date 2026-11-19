@@ -112,6 +112,7 @@ function drawDriveCharts() {
     <line x1="${L}" x2="${W - R}" y1="${Y(0)}" y2="${Y(0)}" class="axis"/>
     ${hline(MOTOR.M0, "lim0", "S1 M0")}${hline(-MOTOR.M0, "lim0", "")}${hline(lim, "lim1", `${(PARAMS.torqueLimit * 100).toFixed(0)} % Mmax`)}${hline(-lim, "lim1", "")}
     ${MOTOR_ROWS.map(([, j, col]) => `<polyline points="${line(j)}" fill="none" stroke="var(${col})" stroke-width="1.3"/>`).join("")}
+    ${PHYS ? MOTOR_ROWS.map(([, j, col]) => `<polyline points="${PHYS.tau.map((q, k) => (k % 2 ? null : `${X(PHYS.t[k]).toFixed(1)},${Y(q[j] / (PARAMS.ratio * PARAMS.eta)).toFixed(1)}`)).filter(Boolean).join(" ")}" fill="none" stroke="var(${col})" stroke-width="1" stroke-dasharray="3 2" opacity="0.9"/>`).join("") : ""}
     <line id="tq-head" x1="${L}" x2="${L}" y1="${T}" y2="${H - B}" stroke="var(--accent)"/>
     <text x="${L - 4}" y="${Y(ymax * 0.85) + 3}" text-anchor="end">${fmt(ymax * 0.85, 0)}</text><text x="${L - 4}" y="${Y(-ymax * 0.85) + 3}" text-anchor="end">${fmt(-ymax * 0.85, 0)}</text>
     <text x="${L}" y="${H - 6}">0 s</text><text x="${W - R}" y="${H - 6}" text-anchor="end">${DURATION.toFixed(1)} s · motor torque, Nm</text>

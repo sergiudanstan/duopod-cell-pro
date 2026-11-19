@@ -1,7 +1,7 @@
 // Checks the cell logic in index.html without a browser.
 // Usage: node tests/run.mjs [file.html] [--perturb]
 //   --perturb lets the escapement release on vacuum OK (robot still low): the overlap and clearance checks must fail.
-import { readFileSync } from "node:fs";
+import { readFileSync, existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 
@@ -143,6 +143,20 @@ check(S.th.every(Boolean), `IK solved at all ${S.n} samples (60 Hz)`);
   Object.assign(L.PARAMS, L.PARAMS0); L.rebuild();
   for (const n of notes) console.log("INFO  what-if " + n);
   check(bad.length === 0, `what-if sweep: ${notes.length} edge cases, no NaN or exception${bad.length ? " -> " + bad.join("; ") : ""}`);
+}
+
+// 11. MuJoCo physics replay (physics/duopod_physics.json from duopod-cell-mujoco): every check above, on the recorded run
+{
+  const pj = join(here, "..", "physics", "duopod_physics.json");
+  if (!existsSync(pj) || perturb) console.log("SKIP  physics replay (no physics/duopod_physics.json or perturbed run)");
+  else {
+    const data = JSON.parse(readFileSync(pj, "utf8")); data.n = data.t.length; data.fps = data.meta.fps;
+    const P = new Function("DATA", m[1] + "\nPHYS = DATA; rebuild();\nreturn { get S() { return S; }, checkLimits, minClearance, cycleStats, get cartons() { return cartons; } };")(data);
+    const st = P.cycleStats(), mc = P.minClearance(), f = P.checkLimits();
+    console.log(`INFO  physics replay: ${data.meta.engine}, ${data.n} frames, ${st.placed} cartons, ${st.perMin.toFixed(1)}/min, ` +
+      `min clearance ${mm(mc.m)} mm (${mc.what}), measured motor peak ${Math.max(...P.S.motor.peak).toFixed(2)} Nm, RMS ${Math.max(...P.S.motor.rms).toFixed(2)} Nm`);
+    check(st.placed === data.cartons.length && f.length === 0, `physics replay: all ${st.placed} cartons placed, all limits hold${f.length ? " -> " + f.join(", ") : ""}`);
+  }
 }
 
 console.log(`\n${fails ? "FAILED" : "OK"}: ${fails} failing check(s)${perturb ? " (perturbed run)" : ""}`);

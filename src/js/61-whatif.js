@@ -25,6 +25,7 @@ function syncWhatIfInputs() {
 }
 let rebuildTimer = 0;
 function queueRebuild() {
+  if (PHYS) { setSimSource("kinematic"); return; }
   clearTimeout(rebuildTimer);
   rebuildTimer = setTimeout(() => { rebuild(); refreshModel(); }, 90);
 }

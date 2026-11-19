@@ -33,7 +33,8 @@ const PARAMS0 = { ...PARAMS };
 // ---------------------------------------------------------------- cell
 const CARTON = { x: 0.180, y: 0.250, h: 0.120 };          // across the belt, along the belt, height
 const BELTS = {
-  A: { x: 0.20, w: 0.30, v: PARAMS.vA, y0: -1.75, y1: 0.40 },    // infeed (operator's left, seen from +y), flows +y, stops the carton in the robot plane
+  A: { x: 0.20, w: 0.22, v: PARAMS.vA, y0: -1.75, y1: 0.40 },    // infeed (operator's left, seen from +y); guides 220 mm apart keep the carton
+  //   centred under the gripper (the MuJoCo physics run showed a 300 mm gap lets real cartons drift sideways)
   B: { x: -0.20, w: 0.30, v: PARAMS.vB, y0: -0.55, y1: 1.75 },   // outfeed, runs continuously
 };
 const GUIDE = { t: 0.010, top: 0.060 };
@@ -168,6 +169,50 @@ function applyParams() {
 // ---------------------------------------------------------------- event simulation: infeed queue, escapement, stopper, robot, outfeed
 const SIM_DT = 1 / 600;
 let segs = [], cartons = [], escape = [], DURATION = 0;
+// MuJoCo physics replay (duopod-cell-mujoco/tools/export_trajectory.py): when set, the cycle, the TCP, the cartons and the vacuum
+// come from the recorded physics run instead of the kinematic event simulation; every check below runs on that data.
+let PHYS = null;
+const physIndex = (t) => { const f = clamp(t * PHYS.fps, 0, PHYS.n - 1), i = Math.floor(f); return [i, Math.min(PHYS.n - 1, i + 1), f - i]; };
+function scheduleFromPhysics() {
+  segs = []; escape = [];
+  const st = PHYS.state, k = PHYS.k, tt = PHYS.t;
+  for (let i = 0; i < PHYS.n; i++) {
+    if (i === 0 || st[i] !== st[i - 1]) {
+      if (segs.length) segs[segs.length - 1].t1 = tt[i];
+      segs.push({ kind: st[i], t0: tt[i], t1: tt[i], k: k[i] >= 0 && st[i] !== "wait" && st[i] !== "back" ? k[i] : undefined });
+    }
+  }
+  segs[segs.length - 1].t1 = PHYS.duration;
+  let open = false;
+  for (let i = 0; i < PHYS.n; i++) {
+    const o = PHYS.blade[i] > 0.02;
+    if (o !== open) { escape.push(o ? { t: tt[i], ev: "release", clamp: PHYS.clamp[i] > 0.005 ? 1 : -1 } : { t: tt[i], ev: "blade up" }); open = o; }
+  }
+  cartons = PHYS.cartons.map((fr, kk) => {
+    const first = fr.findIndex((f) => f !== 0), placed = PHYS.placed.find((p) => p[1] === kk);
+    let last = -1; for (let i = fr.length - 1; i >= 0; i--) if (fr[i] !== 0) { last = i; break; }
+    return { k: kk, knots: [], spawn: first >= 0 ? tt[first] : null, pick: PHYS.picks[kk] ?? null, place: placed ? placed[0] : null,
+      bAt: placed ? placed[0] : null, gone: last >= 0 && last < PHYS.n - 1 ? tt[last + 1] : Infinity };
+  });
+  DURATION = PHYS.duration;
+  segs.push({ kind: "end", t0: DURATION, t1: DURATION + 1e-6 });
+}
+// physics replay: arm-side torque measured in MuJoCo (actuator force), joint speed / acceleration from the recorded TCP
+// at the recording rate (finer differences of the interpolated path would only measure the interpolation)
+function physDynamics(t) {
+  const [i] = physIndex(t), h = 1 / PHYS.fps, a = Math.max(0, i - 1), b = Math.min(PHYS.n - 1, i + 1);
+  const th = [a, i, b].map((k) => ik2(PHYS.tcp[k]));
+  if (th.some((v) => !v)) return { tau: [NaN, NaN], thd: [0, 0], thdd: [0, 0] };
+  const thd = [0, 1].map((j) => (th[2][j] - th[0][j]) / ((b - a) * h || h));
+  const thdd = [0, 1].map((j) => (th[2][j] - 2 * th[1][j] + th[0][j]) / (h * h));
+  return { tau: PHYS.tau[i].slice(), thd, thdd, measured: true };
+}
+function physCarton(kk, t) {        // [x, y, z, qw, qx, qy, qz] of the carton centre, or null
+  const [i, j, a] = physIndex(t), fr = PHYS.cartons[kk], A = fr[i], B = fr[j];
+  if (!A) return null;
+  if (!B) return A.slice();
+  return A.map((v, n) => (n < 3 ? lerp(v, B[n], a) : (a < 0.5 ? v : B[n])));
+}
 const LABEL = {
   wait: "Wait for carton", down: "Descend to carton", grip: "Vacuum on", transfer: "Transfer A → B",
   release: "Vacuum off, blow-off", holdB: "Hold: belt B drop zone busy", back: "Return above infeed", backPick: "Return straight to next carton", end: "Home",
@@ -189,6 +234,7 @@ const ESC_ON_GRIP = false;
 
 let violations = [];
 function schedule() {
+  if (PHYS) return scheduleFromPhysics();
   segs = []; escape = []; violations = [];
   // carton k: front edge on belt A as knots [t, yFront]; then held by the robot; then on belt B.
   cartons = Array.from({ length: N_CARTONS }, (_, k) => ({ k, knots: [], spawn: null, pick: null, place: null, bAt: null, gone: Infinity }));
@@ -298,13 +344,14 @@ function segAt(t) {
   return segs[lo];
 }
 function robotTcp(t) {
+  if (PHYS) { const [i, j, a] = physIndex(t); return [lerp(PHYS.tcp[i][0], PHYS.tcp[j][0], a), lerp(PHYS.tcp[i][1], PHYS.tcp[j][1], a)]; }
   const s = segAt(t);
   if (s.move) return MOVES[s.move].at(t - s.t0);
   if (s.kind === "grip" || s.kind === "holdB") return P.pick.slice();
   if (s.kind === "release") return P.place.slice();
   return P.ready.slice();
 }
-function vacuumOn(t) { const s = segAt(t); return s.kind === "grip" ? (t - s.t0) / (s.t1 - s.t0) > 0.3 : s.kind === "transfer" || s.kind === "holdB" || s.kind === "release" && (t - s.t0) / (s.t1 - s.t0) < 0.4; }
+function vacuumOn(t) { if (PHYS) return PHYS.vac[physIndex(t)[0]] === 1; const s = segAt(t); return s.kind === "grip" ? (t - s.t0) / (s.t1 - s.t0) > 0.3 : s.kind === "transfer" || s.kind === "holdB" || s.kind === "release" && (t - s.t0) / (s.t1 - s.t0) < 0.4; }
 // knot interpolation: between knots the carton either moves at belt speed or stands still, so linear interpolation is exact
 function frontAt(c, t) {
   const K = c.knots;
@@ -320,6 +367,7 @@ function frontAt(c, t) {
 }
 // carton bottom-face centre [x, y, z] or null when not in the cell
 function cartonAt(c, t) {
+  if (PHYS) { const q = physCarton(c.k, t); return q ? [q[0], q[1], q[2] - CARTON.h / 2] : null; }
   if (c.spawn == null || t < c.spawn) return null;
   if (c.bAt != null && t >= c.bAt) {
     if (t >= c.gone) return null;
@@ -400,7 +448,7 @@ function sampleCycle() {
     mu.push(transmission(pose));
     const J = jacobian(pose.th); cond.push(cond2(J));
     const holding = cartons.some((c) => c.pick != null && t >= c.pick && t < c.bAt);
-    const d = jointDynamics(t, holding);                 // arm-side torque, speed, accel (11-dynamics)
+    const d = PHYS ? physDynamics(t) : jointDynamics(t, holding);   // arm-side torque, speed, accel (11-dynamics / measured)
     dyn.push(d); torque.push(d.tau);
     // clearances
     let best = { m: Infinity, what: "" }, pen = 0;
@@ -411,7 +459,7 @@ function sampleCycle() {
     for (const o of STATIC) {
       for (const cp of env.caps) note(capsuleBoxDist(cp, o), `${cp.name} ↔ ${o.name}`);
       for (const bx of env.boxes) note(boxGap(bx, o), `${bx.name} ↔ ${o.name}`);
-      if (heldBox && !(o.name === "stopper" && Math.abs(heldBox.q[0] - BELTS.A.x) < 1e-6)) note(boxGap(heldBox.box, o), `held carton ↔ ${o.name}`);
+      if (heldBox && !(o.name === "stopper" && Math.abs(heldBox.q[0] - BELTS.A.x) < (BELTS.A.w - CARTON.x) / 2 + 1e-6)) note(boxGap(heldBox.box, o), `held carton ↔ ${o.name}`);
     }
     for (const lb of loose) {
       for (const cp of env.caps) note(capsuleBoxDist(cp, lb.box), `${cp.name} ↔ carton ${lb.c.k + 1}`);

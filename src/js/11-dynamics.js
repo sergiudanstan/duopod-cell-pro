@@ -102,7 +102,8 @@ function motorStats() {
     const d = S.dyn[k]; if (!d) { tm.push([NaN, NaN]); nm.push([NaN, NaN]); continue; }
     const tq = [0, 1].map((j) => {
       const load = d.tau[j] / i, motoring = d.tau[j] * d.thd[j] >= 0;
-      return (motoring ? load / eta : load * eta) + MOTOR.J * i * d.thdd[j];
+      // measured physics torque already contains the reflected rotor inertia (MuJoCo armature)
+      return (motoring ? load / eta : load * eta) + (d.measured ? 0 : MOTOR.J * i * d.thdd[j]);
     });
     const n = [0, 1].map((j) => d.thd[j] * i * 60 / (2 * Math.PI));
     tm.push(tq); nm.push(n);
@@ -134,7 +135,8 @@ function minClearance() { return S.clear.reduce((b, c, k) => (c.m < b.m ? { ...c
 function checkLimits() {
   const fails = [];
   if (!S.th.every(Boolean)) fails.push("reach");
-  if (Math.max(...S.overlap) > 1e-6) fails.push("carton overlap");
+  // queued cartons touch; MuJoCo soft contacts compress up to a few tenths of a millimetre, so physics data gets 1 mm
+  if (Math.max(...S.overlap) > (PHYS ? 1e-3 : 1e-6)) fails.push("carton overlap");
   if (minClearance().m < 0.010) fails.push("clearance < 10 mm");
   if (Math.max(...S.gripPen) > 1e-6) fails.push("gripper hits a carton");
   if (violations.length) fails.push("descent without carton");
