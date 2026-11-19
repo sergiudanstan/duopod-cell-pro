@@ -1,0 +1,114 @@
+// Deterministic cycle film. Frames are pc.seek(k/30), two animation frames, then a JPEG.
+// Usage: node tools/record.mjs [--cad=0]
+// Writes ~/Downloads/duopod_cell_pro/duopod_cell_pro.mp4 (vendor CAD robot when _cad/duopod.glb exists, else procedural).
+import { spawn } from "node:child_process";
+import { existsSync, mkdirSync, rmSync } from "node:fs";
+import { homedir } from "node:os";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+
+const { chromium } = await import("/opt/homebrew/lib/node_modules/playwright/index.mjs");
+
+const root = join(dirname(fileURLToPath(import.meta.url)), "..");
+const outDir = join(homedir(), "Downloads/duopod_cell_pro");
+const frames = process.env.FRAMES_DIR || join(outDir, ".frames");
+const hasCad = existsSync(join(root, "_cad/duopod.glb")) && !process.argv.includes("--cad=0");
+
+mkdirSync(outDir, { recursive: true });
+
+const server = spawn("python3", ["-m", "http.server", "8777", "--bind", "127.0.0.1"], {
+  cwd: root, stdio: ["ignore", "pipe", "pipe"],
+});
+let serverLog = "";
+server.stdout.on("data", (d) => { serverLog += d; });
+server.stderr.on("data", (d) => { serverLog += d; });
+
+function ffmpeg(out) {
+  return new Promise((resolve, reject) => {
+    const p = spawn("ffmpeg", [
+      "-y", "-framerate", "30", "-i", join(frames, "f_%05d.jpg"),
+      "-c:v", "libx264", "-pix_fmt", "yuv420p", "-crf", "18", "-movflags", "+faststart",
+      out,
+    ], { stdio: ["ignore", "inherit", "inherit"] });
+    p.on("exit", (code) => (code === 0 ? resolve() : reject(new Error("ffmpeg exit " + code))));
+  });
+}
+
+let browser;
+try {
+  await new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error("http.server did not answer")), 8000);
+    const ping = async () => {
+      if (server.exitCode != null) { clearTimeout(timer); reject(new Error("http.server exited\n" + serverLog)); return; }
+      try {
+        const r = await fetch("http://127.0.0.1:8777/");
+        if (r.status < 500) { clearTimeout(timer); resolve(); return; }
+      } catch { /* not up yet */ }
+      setTimeout(ping, 100);
+    };
+    ping();
+  });
+
+  browser = await chromium.launch({
+    channel: "chrome", headless: false, args: ["--window-size=2000,1200"],
+  });
+
+  async function film(query, out) {
+    rmSync(frames, { recursive: true, force: true });
+    mkdirSync(frames, { recursive: true });
+    const page = await browser.newPage({ viewport: { width: 1920, height: 1080 } });
+    const errors = [];
+    page.on("console", (msg) => { if (msg.type() === "error") errors.push(msg.text()); });
+    page.on("pageerror", (err) => errors.push(String(err)));
+    await page.goto("http://127.0.0.1:8777/index.html" + query, { waitUntil: "domcontentloaded", timeout: 60000 });
+    await page.waitForFunction(() => window.pcReady === true, { timeout: 45000 });
+    if (!query.includes("cad=0")) await page.waitForFunction(() => window.pc.cad === true, { timeout: 30000 });
+    await page.waitForTimeout(3200);
+    await page.evaluate(() => window.setQuality(true));
+    const duration = await page.evaluate(() => window.pc.DURATION);
+    const n = Math.floor(duration * 30) + 1;
+    console.log(query || "(cad)", "frames", n, "duration", duration.toFixed(2));
+    for (let k = 0; k < n; k++) {
+      await page.evaluate((k) => {
+        const duration = window.pc.DURATION;
+        const t = Math.min(k / 30, duration);
+        window.pc.pause();
+        window.pc.seek(t);
+        const views = window.pcViews;
+        // camera script: slow orbit, close-up of the pick, front view of the robot plane, close-up of the head
+        let pose;
+        if (t >= 5.5 && t < 9.0) pose = views.pick;
+        else if (t >= 11.0 && t < 14.5) pose = views.front;
+        else if (t >= 16.0 && t < 18.5) pose = views.robot;
+        else {
+          const ang = (t / duration - 0.5) * 50 * Math.PI / 180;
+          const iso = views.iso;
+          const dx = iso.pos.x - iso.target.x, dz = iso.pos.z - iso.target.z;
+          const c = Math.cos(ang), s = Math.sin(ang);
+          pose = { pos: { x: iso.target.x + dx * c - dz * s, y: iso.pos.y, z: iso.target.z + dx * s + dz * c }, target: iso.target };
+        }
+        window.pc.setCamera([pose.pos.x, pose.pos.y, pose.pos.z], [pose.target.x, pose.target.y, pose.target.z]);
+      }, k);
+      await page.evaluate(() => new Promise((resolve) => {
+        requestAnimationFrame(() => requestAnimationFrame(resolve));
+      }));
+      const file = join(frames, `f_${String(k + 1).padStart(5, "0")}.jpg`);
+      await page.screenshot({ path: file, type: "jpeg", quality: 92 });
+      if (k % 100 === 0) console.log("frame", k);
+    }
+    await page.close();
+    if (errors.length) {
+      console.error(errors.slice(0, 8).join("\n"));
+      throw new Error(errors.length + " console errors during " + query);
+    }
+    await ffmpeg(out);
+    rmSync(frames, { recursive: true, force: true });
+    console.log(out);
+  }
+
+  await film(hasCad ? "" : "?cad=0", join(outDir, "duopod_cell_pro.mp4"));
+} finally {
+  rmSync(frames, { recursive: true, force: true });
+  if (browser) await browser.close();
+  server.kill("SIGTERM");
+}
