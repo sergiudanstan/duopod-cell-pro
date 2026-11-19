@@ -853,6 +853,20 @@ function cartonAt(c, t) {
 const cartonBox = (p) => ({ min: [p[0] - CARTON.x / 2, p[1] - CARTON.y / 2, p[2]], max: [p[0] + CARTON.x / 2, p[1] + CARTON.y / 2, p[2] + CARTON.h] });
 
 // ---------------------------------------------------------------- static obstacles (axis-aligned boxes)
+// Robot support (portal). Rod pair 1 pivots on the head at x = ±166.5 mm, just under the mounting face, and rises outwards
+// past the head edge; the triangle and the upper arms rise up to ~210 mm above the face (connecting dimensions). So the adapter
+// plate stays inside the rod pivots (x ±165 mm, inner M20 row at x ±135 mm of the drawing) and the two carriers sit over it
+// (x ±120 mm). Earlier layouts (700 mm plate, carriers at ±300 mm; then a 430 mm plate) were hit by rod pair 1.
+const SUPPORT = { plateX: 0.165, plateY: 0.21, plateT: 0.030, carrierX: 0.120, beam: 0.080, sideX: 0.80, frameY: 0.72 };
+function supportBoxes() {
+  const z0 = ROBOT.mountZ, zc = z0 + SUPPORT.plateT, b = SUPPORT.beam / 2;
+  const out = [{ name: "mounting plate", min: [-SUPPORT.plateX, -SUPPORT.plateY, z0], max: [SUPPORT.plateX, SUPPORT.plateY, zc] }];
+  for (const s of [-1, 1]) {
+    out.push({ name: `carrier ${s < 0 ? "-" : "+"}`, min: [s * SUPPORT.carrierX - b, -SUPPORT.frameY, zc], max: [s * SUPPORT.carrierX + b, SUPPORT.frameY, zc + SUPPORT.beam] });
+    out.push({ name: `side beam ${s < 0 ? "-" : "+"}`, min: [s * SUPPORT.sideX - b, -SUPPORT.frameY, zc], max: [s * SUPPORT.sideX + b, SUPPORT.frameY, zc + SUPPORT.beam] });
+  }
+  return out;
+}
 function guideBoxes() {
   const out = [];
   for (const [name, B] of Object.entries(BELTS)) for (const s of [-1, 1]) {
@@ -862,7 +876,8 @@ function guideBoxes() {
   out.push({ name: "stopper", min: [BELTS.A.x - BELTS.A.w / 2, STOP_Y, 0.004], max: [BELTS.A.x + BELTS.A.w / 2, STOP_Y + 0.012, 0.070] });
   return out;
 }
-const STATIC = guideBoxes();
+const SUPPORT_BOXES = supportBoxes();
+const STATIC = guideBoxes().concat(SUPPORT_BOXES);
 function boxGap(a, b) {      // separation distance between two AABBs (0 if touching or overlapping), and overlap depth
   let d2 = 0, pen = Infinity;
   for (let i = 0; i < 3; i++) {
@@ -884,7 +899,9 @@ function robotEnvelope(pose) {
     caps.push({ name: "upper arm", a: [pose.motors[i][0], 0, pose.motors[i][1]], b: [E[0], 0, E[1]], r: 0.050 });
   });
   const A = pose.motors[1], E = pose.elbows[1], J = pose.joints[1], o1 = ROBOT.o1, o2 = ROBOT.o2;
-  caps.push({ name: "rod pair 1", a: [A[0] + o1[0], 0, A[1] + o1[1]], b: [E[0] + o1[0], 0, E[1] + o1[1]], r: 0.025 });
+  caps.push({ name: "rod pair 1", a: [A[0] + o1[0], 0, A[1] + o1[1]], b: [E[0] + o1[0], 0, E[1] + o1[1]], r: 0.015 });   // ball cups Ø27
+  const T1 = [E[0] + o1[0], 0, E[1] + o1[1]], T2 = [E[0] + o2[0], 0, E[1] + o2[1]], E3 = [E[0], 0, E[1]];
+  caps.push({ name: "triangle", a: E3, b: T1, r: 0.027 }, { name: "triangle", a: T1, b: T2, r: 0.027 }, { name: "triangle", a: T2, b: E3, r: 0.027 });
   caps.push({ name: "rod pair 2", a: [E[0] + o2[0], 0, E[1] + o2[1]], b: [J[0] + o2[0], 0, J[1] + o2[1]], r: 0.020 });
   const f = pose.flange, t = pose.tcp;
   const boxes = [
@@ -1678,8 +1695,8 @@ const LAYOUT = {
   floor: -0.85,                                   // belt height 850 mm
   posts: { x: 0.80, y: 0.72 },                    // 80x80 portal posts at (±x, ±y)
   topZ: [ROBOT.mountZ + 0.030, ROBOT.mountZ + 0.110],   // 80x80 beams on top of the 30 mm mounting plate
-  carriers: 0.30,                                 // two 80x80 carriers along y at x = ±0.30 hold the mounting plate
-  plate: { x: 0.70, y: 0.42, t: 0.030 },          // robot mounting plate (underside = robot mounting face)
+  carriers: SUPPORT.carrierX,                      // two 80x80 carriers along y over the robot head (see SUPPORT in the logic)
+  plate: { x: 2 * SUPPORT.plateX, y: 2 * SUPPORT.plateY, t: SUPPORT.plateT },   // mounting plate = head footprint (underside = mounting face)
   guardTop: ROBOT.mountZ + 0.110,
   opening: { x: 0.42, z: [-0.16, 0.24] },         // belt openings in the end walls
   stack: { x: 0.80, y: 0.72 },
@@ -1761,7 +1778,7 @@ for (const sx of [-1, 1]) beam80(V(sx * PX, -PY + 0.04, gz0 - 0.04), V(sx * PX, 
 // mounting plate: underside is the robot mounting face (z = ROBOT.mountZ); M20 screws per the connecting dimensions
 rbox(LAYOUT.plate.x, LAYOUT.plate.y, LAYOUT.plate.t, 0.004, M.aluBlasted, 0, 0, ROBOT.mountZ + LAYOUT.plate.t / 2, world);
 for (const sx of [-1, 1]) for (const y of [-0.16, 0, 0.16]) addBolt(V(sx * LAYOUT.carriers, y, TZ1), V(0, 0, 1));
-for (const [x, y] of [[-0.2, 0], [0.2, 0], [-0.17, -0.105], [0.17, -0.105], [-0.17, 0.105], [0.17, 0.105]]) {
+for (const [x, y] of [[-0.135, -0.125], [0.135, -0.125], [-0.135, 0.12], [0.135, 0.12], [-0.135, 0.04], [0.135, 0.04]]) {   // inner M20 row
   const h = lathe([[0, 0], [0.016, 0], [0.016, 0.012], [0, 0.012]], M.steel, world, 6); h.position.set(x, y, ROBOT.mountZ + LAYOUT.plate.t);
 }
 
@@ -2204,7 +2221,7 @@ for (const s of [-1, 1]) {
   const lab = labelPlane(s < 0 ? "M2" : "M1", 0.044, 0.022, { bg: "#18191b", fg: "#e8e8e8" });
   lab.rotation.x = Math.PI / 2; lab.rotation.y = Math.PI; lab.position.set(x, 0.330, -0.0495); motors.add(lab);
   void nut;
-  motorCables.push(tubeAlong([V(x, 0.395, 0.085), V(x, 0.42, 0.13), V(x * 0.7, 0.36, 0.175), V(x * 0.4, 0.25, 0.19), V(s * 0.30, 0.20, 0.215)], 0.0075, M.blackRubber, robotRoot, 40, 10));
+  motorCables.push(tubeAlong([V(x, 0.395, 0.085), V(x, 0.42, 0.13), V(x * 0.7, 0.36, 0.175), V(x * 0.4, 0.25, 0.19), V(s * LAYOUT.carriers * 0.9, 0.12, LAYOUT.topZ[1] - ROBOT.zm + 0.012)], 0.0075, M.blackRubber, robotRoot, 40, 10));
 }
 
 // ---- upper arms: clamping hub on the gearbox output, carbon tube with bonded sleeves, elbow bearing housing

@@ -74,7 +74,7 @@ for (const sx of [-1, 1]) beam80(V(sx * PX, -PY + 0.04, gz0 - 0.04), V(sx * PX, 
 // mounting plate: underside is the robot mounting face (z = ROBOT.mountZ); M20 screws per the connecting dimensions
 rbox(LAYOUT.plate.x, LAYOUT.plate.y, LAYOUT.plate.t, 0.004, M.aluBlasted, 0, 0, ROBOT.mountZ + LAYOUT.plate.t / 2, world);
 for (const sx of [-1, 1]) for (const y of [-0.16, 0, 0.16]) addBolt(V(sx * LAYOUT.carriers, y, TZ1), V(0, 0, 1));
-for (const [x, y] of [[-0.2, 0], [0.2, 0], [-0.17, -0.105], [0.17, -0.105], [-0.17, 0.105], [0.17, 0.105]]) {
+for (const [x, y] of [[-0.135, -0.125], [0.135, -0.125], [-0.135, 0.12], [0.135, 0.12], [-0.135, 0.04], [0.135, 0.04]]) {   // inner M20 row
   const h = lathe([[0, 0], [0.016, 0], [0.016, 0.012], [0, 0.012]], M.steel, world, 6); h.position.set(x, y, ROBOT.mountZ + LAYOUT.plate.t);
 }
 

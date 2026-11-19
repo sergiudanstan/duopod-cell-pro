@@ -19,7 +19,7 @@ if (perturb) {
   if (code === before) { console.error("perturbation target not found"); process.exit(2); }
 }
 const L = new Function(code + `
-return { ROBOT, TOOL, CARTON, BELTS, GUIDE, Z, P, N_CARTONS, ik2, fk2, armPose, jacobian, cond2, transmission, cycleStats, cartonAt, DEG, STOP_Y,
+return { SUPPORT_BOXES, robotEnvelope, capsuleBoxDist, boxGap, ROBOT, TOOL, CARTON, BELTS, GUIDE, Z, P, N_CARTONS, ik2, fk2, armPose, jacobian, cond2, transmission, cycleStats, cartonAt, DEG, STOP_Y,
   PARAMS, PARAMS0, PARAM_RANGE, MOTOR, VAC, rebuild, checkLimits, minClearance, optimizeScale, staticTorque, potential,
   get S() { return S; }, get segs() { return segs; }, get cartons() { return cartons; }, get DURATION() { return DURATION; },
   get escape() { return escape; }, get violations() { return violations; }, get MOVES() { return MOVES; } };`)();
@@ -29,7 +29,8 @@ let S = L.S;
 let fails = 0;
 const check = (ok, msg) => { console.log(`${ok ? "PASS" : "FAIL"}  ${msg}`); if (!ok) fails++; };
 const mm = (v) => (v * 1000).toFixed(1);
-const flangeTop = ROBOT.mountZ - ROBOT.datasheet.below;           // top line of the TCP working range (flange plane)
+const flangeTop = ROBOT.mountZ - ROBOT.datasheet.below;
+const FLANGE_TOP_DS = flangeTop;           // top line of the TCP working range (flange plane)
 
 // 1. kinematics against the vendor CAD pose and IK o FK on a grid
 {
@@ -55,6 +56,19 @@ for (const [w, h, label] of [[ROBOT.datasheet.width, ROBOT.datasheet.height, "da
   }
   check(miss === 0 && muMin >= 30 && muMax <= 150 && cMax < 5,
     `${label}: reachable, transmission ${muMin.toFixed(0)}..${muMax.toFixed(0)} deg, Jacobian condition <= ${cMax.toFixed(2)}`);
+}
+// 2b. the support structure (mounting plate, carriers, side beams) clears every robot part over the full datasheet range
+{
+  let worst = { d: Infinity };
+  for (let i = 0; i <= 40; i++) for (let j = 0; j <= 16; j++) {
+    const p = L.armPose([-0.5 + i / 40, FLANGE_TOP_DS - 0.4 * j / 16 - TOOL.len]); if (!p) continue;
+    const env = L.robotEnvelope(p);
+    for (const o of L.SUPPORT_BOXES) for (const c of env.caps) {
+      const d = L.capsuleBoxDist(c, o);
+      if (d < worst.d) worst = { d, what: `${c.name} ↔ ${o.name}`, x: -0.5 + i / 40 };
+    }
+  }
+  check(worst.d >= 0.010, `support structure clears the robot over the datasheet range: min ${mm(worst.d)} mm (${worst.what})`);
 }
 // 3. pick and place points sit inside the required rectangle (flange plane)
 {

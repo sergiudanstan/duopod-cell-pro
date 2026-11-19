@@ -380,6 +380,20 @@ function cartonAt(c, t) {
 const cartonBox = (p) => ({ min: [p[0] - CARTON.x / 2, p[1] - CARTON.y / 2, p[2]], max: [p[0] + CARTON.x / 2, p[1] + CARTON.y / 2, p[2] + CARTON.h] });
 
 // ---------------------------------------------------------------- static obstacles (axis-aligned boxes)
+// Robot support (portal). Rod pair 1 pivots on the head at x = ±166.5 mm, just under the mounting face, and rises outwards
+// past the head edge; the triangle and the upper arms rise up to ~210 mm above the face (connecting dimensions). So the adapter
+// plate stays inside the rod pivots (x ±165 mm, inner M20 row at x ±135 mm of the drawing) and the two carriers sit over it
+// (x ±120 mm). Earlier layouts (700 mm plate, carriers at ±300 mm; then a 430 mm plate) were hit by rod pair 1.
+const SUPPORT = { plateX: 0.165, plateY: 0.21, plateT: 0.030, carrierX: 0.120, beam: 0.080, sideX: 0.80, frameY: 0.72 };
+function supportBoxes() {
+  const z0 = ROBOT.mountZ, zc = z0 + SUPPORT.plateT, b = SUPPORT.beam / 2;
+  const out = [{ name: "mounting plate", min: [-SUPPORT.plateX, -SUPPORT.plateY, z0], max: [SUPPORT.plateX, SUPPORT.plateY, zc] }];
+  for (const s of [-1, 1]) {
+    out.push({ name: `carrier ${s < 0 ? "-" : "+"}`, min: [s * SUPPORT.carrierX - b, -SUPPORT.frameY, zc], max: [s * SUPPORT.carrierX + b, SUPPORT.frameY, zc + SUPPORT.beam] });
+    out.push({ name: `side beam ${s < 0 ? "-" : "+"}`, min: [s * SUPPORT.sideX - b, -SUPPORT.frameY, zc], max: [s * SUPPORT.sideX + b, SUPPORT.frameY, zc + SUPPORT.beam] });
+  }
+  return out;
+}
 function guideBoxes() {
   const out = [];
   for (const [name, B] of Object.entries(BELTS)) for (const s of [-1, 1]) {
@@ -389,7 +403,8 @@ function guideBoxes() {
   out.push({ name: "stopper", min: [BELTS.A.x - BELTS.A.w / 2, STOP_Y, 0.004], max: [BELTS.A.x + BELTS.A.w / 2, STOP_Y + 0.012, 0.070] });
   return out;
 }
-const STATIC = guideBoxes();
+const SUPPORT_BOXES = supportBoxes();
+const STATIC = guideBoxes().concat(SUPPORT_BOXES);
 function boxGap(a, b) {      // separation distance between two AABBs (0 if touching or overlapping), and overlap depth
   let d2 = 0, pen = Infinity;
   for (let i = 0; i < 3; i++) {
@@ -411,7 +426,9 @@ function robotEnvelope(pose) {
     caps.push({ name: "upper arm", a: [pose.motors[i][0], 0, pose.motors[i][1]], b: [E[0], 0, E[1]], r: 0.050 });
   });
   const A = pose.motors[1], E = pose.elbows[1], J = pose.joints[1], o1 = ROBOT.o1, o2 = ROBOT.o2;
-  caps.push({ name: "rod pair 1", a: [A[0] + o1[0], 0, A[1] + o1[1]], b: [E[0] + o1[0], 0, E[1] + o1[1]], r: 0.025 });
+  caps.push({ name: "rod pair 1", a: [A[0] + o1[0], 0, A[1] + o1[1]], b: [E[0] + o1[0], 0, E[1] + o1[1]], r: 0.015 });   // ball cups Ø27
+  const T1 = [E[0] + o1[0], 0, E[1] + o1[1]], T2 = [E[0] + o2[0], 0, E[1] + o2[1]], E3 = [E[0], 0, E[1]];
+  caps.push({ name: "triangle", a: E3, b: T1, r: 0.027 }, { name: "triangle", a: T1, b: T2, r: 0.027 }, { name: "triangle", a: T2, b: E3, r: 0.027 });
   caps.push({ name: "rod pair 2", a: [E[0] + o2[0], 0, E[1] + o2[1]], b: [J[0] + o2[0], 0, J[1] + o2[1]], r: 0.020 });
   const f = pose.flange, t = pose.tcp;
   const boxes = [

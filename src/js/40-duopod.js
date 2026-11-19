@@ -103,7 +103,7 @@ for (const s of [-1, 1]) {
   const lab = labelPlane(s < 0 ? "M2" : "M1", 0.044, 0.022, { bg: "#18191b", fg: "#e8e8e8" });
   lab.rotation.x = Math.PI / 2; lab.rotation.y = Math.PI; lab.position.set(x, 0.330, -0.0495); motors.add(lab);
   void nut;
-  motorCables.push(tubeAlong([V(x, 0.395, 0.085), V(x, 0.42, 0.13), V(x * 0.7, 0.36, 0.175), V(x * 0.4, 0.25, 0.19), V(s * 0.30, 0.20, 0.215)], 0.0075, M.blackRubber, robotRoot, 40, 10));
+  motorCables.push(tubeAlong([V(x, 0.395, 0.085), V(x, 0.42, 0.13), V(x * 0.7, 0.36, 0.175), V(x * 0.4, 0.25, 0.19), V(s * LAYOUT.carriers * 0.9, 0.12, LAYOUT.topZ[1] - ROBOT.zm + 0.012)], 0.0075, M.blackRubber, robotRoot, 40, 10));
 }
 
 // ---- upper arms: clamping hub on the gearbox output, carbon tube with bonded sleeves, elbow bearing housing
