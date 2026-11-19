@@ -19,7 +19,7 @@ if (perturb) {
   if (code === before) { console.error("perturbation target not found"); process.exit(2); }
 }
 const L = new Function(code + `
-return { SUPPORT_BOXES, robotEnvelope, capsuleBoxDist, boxGap, ROBOT, TOOL, CARTON, BELTS, GUIDE, Z, P, N_CARTONS, ik2, fk2, armPose, jacobian, cond2, transmission, cycleStats, cartonAt, DEG, STOP_Y,
+return { SUPPORT_BOXES, robotEnvelope, DEG, capsuleBoxDist, boxGap, ROBOT, TOOL, CARTON, BELTS, GUIDE, Z, P, N_CARTONS, ik2, fk2, armPose, jacobian, cond2, transmission, cycleStats, cartonAt, DEG, STOP_Y,
   PARAMS, PARAMS0, PARAM_RANGE, MOTOR, VAC, rebuild, checkLimits, minClearance, optimizeScale, staticTorque, potential,
   get S() { return S; }, get segs() { return segs; }, get cartons() { return cartons; }, get DURATION() { return DURATION; },
   get escape() { return escape; }, get violations() { return violations; }, get MOVES() { return MOVES; } };`)();
@@ -69,6 +69,47 @@ for (const [w, h, label] of [[ROBOT.datasheet.width, ROBOT.datasheet.height, "da
     }
   }
   check(worst.d >= 0.010, `support structure clears the robot over the datasheet range: min ${mm(worst.d)} mm (${worst.what})`);
+}
+// 2c. triangle rod pivots vs the right upper arm (3D): where a pivot crosses the arm tube in the plane, its stub must stay
+//     outside the tube in y (a through pin would hit the arm)
+{
+  const segDist = (p, a, b) => { const d = [b[0] - a[0], b[1] - a[1]], t = Math.max(0, Math.min(1, ((p[0] - a[0]) * d[0] + (p[1] - a[1]) * d[1]) / (d[0] ** 2 + d[1] ** 2))); return Math.hypot(p[0] - a[0] - t * d[0], p[1] - a[1] - t * d[1]); };
+  let crossing = { d: 1 }, worstY = Infinity;
+  for (let i = 0; i <= 80; i++) for (let j = 0; j <= 32; j++) {
+    const p = L.armPose([-0.5 + i / 80, FLANGE_TOP_DS - 0.4 * j / 32 - TOOL.len]); if (!p) continue;
+    const A = p.motors[1], E = p.elbows[1];
+    for (const [nm, o] of [["top", ROBOT.o1], ["low", ROBOT.o2]]) {
+      const d = segDist([E[0] + o[0], E[1] + o[1]], A, E);
+      if (d < crossing.d) crossing = { d, nm, th: p.th[1] * L.DEG };
+      if (d < ROBOT.upperTubeR + ROBOT.stubR) worstY = Math.min(worstY, ROBOT.triStubY[nm][0] - ROBOT.stubR - ROBOT.upperTubeR);
+    }
+  }
+  console.log(`INFO  ${crossing.nm} triangle pivot crosses the upper-arm axis in the plane (${mm(crossing.d)} mm at theta ${crossing.th.toFixed(1)} deg)`);
+  check(worstY >= 0.005, `triangle pivot stubs clear the upper-arm tube in y where they cross it: ${mm(worstY)} mm`);
+}
+// 2d. rod pairs vs arms in 3D: wherever a rod crosses an arm in the plane (projection), the rod must pass beside the arm in y.
+//     rod pair 1 at y ±101.5 mm (cups r 13.5), rod pair 2 at y ±71 mm (cups r 13.5); upper arm r 49 (sleeves), lower arm r 37 (lugs)
+{
+  const segSeg = (a, b, c, d) => {   // min distance between two 2D segments (0 if they intersect)
+    const cr = (o, p, q) => (p[0] - o[0]) * (q[1] - o[1]) - (p[1] - o[1]) * (q[0] - o[0]);
+    if (cr(a, b, c) * cr(a, b, d) < 0 && cr(c, d, a) * cr(c, d, b) < 0) return 0;
+    const pd = (p, u, v) => { const w = [v[0] - u[0], v[1] - u[1]], t = Math.max(0, Math.min(1, ((p[0] - u[0]) * w[0] + (p[1] - u[1]) * w[1]) / (w[0] ** 2 + w[1] ** 2))); return Math.hypot(p[0] - u[0] - t * w[0], p[1] - u[1] - t * w[1]); };
+    return Math.min(pd(a, c, d), pd(b, c, d), pd(c, a, b), pd(d, a, b));
+  };
+  const add = (p, o) => [p[0] + o[0], p[1] + o[1]];
+  let worst = { gap: Infinity }, crossings = 0;
+  for (let i = 0; i <= 80; i++) for (let j = 0; j <= 32; j++) {
+    const p = L.armPose([-0.5 + i / 80, FLANGE_TOP_DS - 0.4 * j / 32 - TOOL.len]); if (!p) continue;
+    const A = p.motors[1], E = p.elbows[1], J = p.joints[1];
+    const rods = [["rod pair 1", add(A, ROBOT.o1), add(E, ROBOT.o1), 0.1015], ["rod pair 2", add(E, ROBOT.o2), add(J, ROBOT.o2), 0.071]];
+    const arms = [["upper arm", A, E, 0.049], ["lower arm", E, J, 0.037]];
+    for (const [rn, ra, rb, ry] of rods) for (const [an, aa, ab, ar] of arms) {
+      const d = segSeg(ra, rb, aa, ab);
+      if (d < ar + 0.0135) { crossings++; const gap = ry - 0.0135 - ar; if (gap < worst.gap) worst = { gap, what: `${rn} over ${an}` }; }
+    }
+  }
+  console.log(`INFO  rods cross arms in the plane at ${crossings} poses of the datasheet grid (they pass beside them in y)`);
+  check(worst.gap >= 0.005, `rod pairs pass beside the arms in y where they cross them: min ${mm(worst.gap)} mm (${worst.what})`);
 }
 // 3. pick and place points sit inside the required rectangle (flange plane)
 {

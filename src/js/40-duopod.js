@@ -176,7 +176,9 @@ const TRI = { E: REF.E[1], top: [REF.E[1][0] + ROBOT.o1[0], REF.E[1][1] + ROBOT.
   const toward = (p, k) => [p[0] + (c[0] - p[0]) * k, p[1] + (c[1] - p[1]) * k];
   const cut = hullOfCircles([toward(TRI.E, 0.55), toward(TRI.top, 0.55), toward(TRI.low, 0.5)], 0.008, 12).reverse();
   for (const s of [-1, 1]) extrudeXZShape(shapeOf(outline, [cut]), s > 0 ? 0.078 : -0.091, s > 0 ? 0.091 : -0.078, M.aluBlasted, P, 0.002);
-  for (const q of [TRI.top, TRI.low]) latheY([[0, -0.106], [0.0058, -0.106], [0.0058, 0.106], [0, 0.106]], M.steel, q[0], q[1], P, 16);
+  // stub pivots on each side (a through pin would cross the upper arm, see ROBOT.triStubY)
+  for (const [q, [y0, y1]] of [[TRI.top, ROBOT.triStubY.top], [TRI.low, ROBOT.triStubY.low]])
+    for (const s of [-1, 1]) latheY(s > 0 ? [[0, y0], [0.0058, y0], [0.0058, y1], [0, y1]] : [[0, -y1], [0.0058, -y1], [0.0058, -y0], [0, -y0]], M.steel, q[0], q[1], P, 16);
   const B = [ROBOT.b + ROBOT.o1[0], ROBOT.o1[1]];
   const rodPair = (a, b, ys, r, parent) => {
     const d = [b[0] - a[0], b[1] - a[1]], L = Math.hypot(...d), u = [d[0] / L, d[1] / L];

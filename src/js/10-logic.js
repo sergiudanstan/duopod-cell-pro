@@ -15,6 +15,9 @@ const ROBOT = {
   o1: [0.04153, 0.11641],          // triangle top pivot - elbow (= head rod pivot - motor axis)
   o2: [-0.11434, 0.05052],         // triangle lower pivot - elbow (= plate rod pivot - plate joint)
   ref: { tcp: [0, -0.744], elbow: [0.56495, 0.09458] },
+  // the triangle's rod pivots are short stubs on each side, never a through pin: the lower pivot sweeps across the
+  // right upper arm (in-plane distance 0 at theta = -23.9 deg); |y| ranges of the stubs vs the arm tube radius
+  triStubY: { top: [0.091, 0.112], low: [0.0575, 0.078] }, upperTubeR: 0.042, stubR: 0.006,
   mountZ: 1.330,                   // mounting face above the belt top
   datasheet: { width: 1.000, height: 0.400, below: 0.914, arcDepth: 0.510 },
 };
