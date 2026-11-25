@@ -1,0 +1,15 @@
+{
+  "name": "duopod-cell-pro",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Browser digital twin of a DuoPod transfer cell with rigid-body dynamics, motor sizing, vacuum model, PLC I/O list and what-if sweeps",
+  "license": "MIT",
+  "type": "module",
+  "scripts": {
+    "build": "node tools/build.mjs",
+    "test": "node tests/run.mjs && node tests/smoke.mjs"
+  },
+  "devDependencies": {
+    "playwright-core": "1.65.0"
+  }
+}
