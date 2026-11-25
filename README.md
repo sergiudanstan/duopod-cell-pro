@@ -1,5 +1,10 @@
 # DuoPod Transfer Cell Pro
 
+[![CI](https://github.com/sergiudanstan/duopod-cell-pro/actions/workflows/ci.yml/badge.svg)](https://github.com/sergiudanstan/duopod-cell-pro/actions/workflows/ci.yml)
+[![CodeQL](https://github.com/sergiudanstan/duopod-cell-pro/actions/workflows/codeql.yml/badge.svg)](https://github.com/sergiudanstan/duopod-cell-pro/actions/workflows/codeql.yml)
+[![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/sergiudanstan/duopod-cell-pro/badge)](https://scorecard.dev/viewer/?uri=github.com/sergiudanstan/duopod-cell-pro)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+
 **Live:** https://sergiudanstan.github.io/duopod-cell-pro/
 
 This is the pro version of [duopod-cell](https://sergiudanstan.github.io/duopod-cell/). A ceiling-mounted 2-axis parallel robot moves 3 kg cartons from an infeed belt to the belt beside it. The robot is modelled on the Autonox DuoPod RVS2-1000-3kg, A_00913.
@@ -49,3 +54,7 @@ uv run --python 3.13 --with trimesh --with numpy --with scipy python -I tools/ca
 Results are a sizing estimate, not a validated machine. The model leaves out joint friction, backlash, gearbox stiffness and cable forces.
 
 Autonox, DuoPod and Beckhoff are trademarks of their owners.
+
+## Development
+
+`index.html` is generated from `src/`; CI fails if the committed copy differs from a fresh `node tools/build.mjs`. `npm ci && npm test` runs the logic tests and the headless smoke test (needs Google Chrome). See [CONTRIBUTING.md](CONTRIBUTING.md) for branches and releases, [SECURITY.md](SECURITY.md) for reporting vulnerabilities, and [CHANGELOG.md](CHANGELOG.md) for history.
